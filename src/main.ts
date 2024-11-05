@@ -44,11 +44,13 @@ const playerMarker = leaflet.marker(OAKES_CLASSROOM);
 playerMarker.bindTooltip("That is you.");
 playerMarker.addTo(map);
 
+//cache cell location
 interface Cell {
   i: number;
   j: number;
 }
 
+//cache holds geocoins
 class Cache {
   coinCount: number;
   position: Cell;
@@ -73,8 +75,10 @@ class Cache {
   }
 }
 
+//amount of coins in player inventory
 let invCount = 0;
 
+//generates caches to be placed on map
 function spawnCache(i: number, j: number) {
   const origin = OAKES_CLASSROOM;
   const bounds = leaflet.latLngBounds([
@@ -126,10 +130,12 @@ function spawnCache(i: number, j: number) {
   });
 }
 
+//updating amount of coins in player inventory
 function updateStatus() {
   sPanel.innerHTML = `${invCount} coins currently held`;
 }
 
+//puts caches on map
 for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
   for (let j = -NEIGHBORHOOD_SIZE; j < NEIGHBORHOOD_SIZE; j++) {
     if (luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY) {
