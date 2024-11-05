@@ -3,6 +3,7 @@ import luck from "./luck.ts";
 
 import "leaflet/dist/leaflet.css";
 import "./style.css";
+
 import "./leafletWorkaround.ts";
 
 const cPanel: HTMLDivElement = document.createElement("div");
@@ -20,6 +21,23 @@ const GAMEPLAY_ZOOM_LEVEL = 19;
 const TILE_DEGREES = 1e-4;
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
+
+//flyweight pattern: reusing cell objects (i, j)
+const cellCache = new Map<string, Cell>();
+function getFlyWeightCell(i: number, j: number): Cell {
+  const key = `${i},${j}`;
+  if (!cellCache.has(key)) {
+    cellCache.set(key, { i, j });
+  }
+  return cellCache.get(key)!;
+}
+
+//convert lat/long to global coords anchored at Null Island
+function latLngToCell(lat: number, lng: number): Cell {
+  const i = Math.round(lat * 1e4);
+  const j = Math.round(lng * 1e4);
+  return getFlyWeightCell(i, j);
+}
 
 // Create the map (element with id "map" is defined in index.html)
 const map = leaflet.map(document.getElementById("map")!, {
@@ -50,14 +68,20 @@ interface Cell {
   j: number;
 }
 
+interface Coin {
+  cell: Cell;
+  serial: number;
+  toString(): string;
+}
+
 //cache holds geocoins
 class Cache {
-  coinCount: number;
+  coins: Coin[];
   position: Cell;
   bounds: leaflet.LatLngBounds;
 
   constructor(position: Cell, bounds: leaflet.LatLngBounds) {
-    this.coinCount = 0;
+    this.coins = [];
     this.position = position;
     this.bounds = bounds;
   }
@@ -66,19 +90,15 @@ class Cache {
     return `${this.position.i}, ${this.position.j}`;
   }
 
-  addCoins(count: number) {
-    this.coinCount += count;
-  }
-
-  removeCoins(count: number) {
-    this.coinCount = Math.max(0, this.coinCount - count);
+  addCoin(coin: Coin) {
+    this.coins.push(coin);
   }
 }
 
-//amount of coins in player inventory
-let invCount = 0;
+//coins in player inventory
+const inv: Coin[] = [];
 
-//generates caches to be placed on map
+//generates caches to be played on map
 function spawnCache(i: number, j: number) {
   const origin = OAKES_CLASSROOM;
   const bounds = leaflet.latLngBounds([
@@ -86,53 +106,79 @@ function spawnCache(i: number, j: number) {
     [origin.lat + (i + 1) * TILE_DEGREES, origin.lng + (j + 1) * TILE_DEGREES],
   ]);
 
-  const rect = leaflet.rectangle(bounds);
-  rect.addTo(map);
+  const cell = latLngToCell(
+    origin.lat + i * TILE_DEGREES,
+    origin.lng + j * TILE_DEGREES,
+  );
+  const cache = new Cache(cell, bounds);
 
-  const cache = new Cache({ i, j }, bounds);
-  cache.addCoins(Math.floor(luck([i, j, "initialValue"].toString()) * 10));
-
-  rect.bindPopup(() => {
-    const popUp = document.createElement("div");
-    popUp.innerHTML = `
-      <div>There is a cache here at "${i},${j}". It has <span id="value">${cache.coinCount}</span> coins.</div>
-      <button id="pickup">pick up</button>
-      <button id="drop">drop</button>`;
-
-    const pickupButton = popUp.querySelector<HTMLButtonElement>("#pickup")!;
-    const dropButton = popUp.querySelector<HTMLButtonElement>("#drop")!;
-    const valueSpan = popUp.querySelector<HTMLSpanElement>("#value")!;
-
-    // Disable drop button if inventory is empty
-    dropButton.disabled = invCount === 0;
-
-    pickupButton.addEventListener("click", () => {
-      if (cache.coinCount > 0) {
-        cache.removeCoins(1);
-        invCount += 1;
-        updateStatus();
-        valueSpan.innerHTML = cache.coinCount.toString();
-        dropButton.disabled = invCount === 0;
-      }
-    });
-
-    dropButton.addEventListener("click", () => {
-      if (invCount > 0) {
-        cache.addCoins(1);
-        invCount -= 1;
-        updateStatus();
-        valueSpan.innerHTML = cache.coinCount.toString();
-        dropButton.disabled = invCount === 0;
-      }
-    });
-
-    return popUp;
-  });
+  const initialCoins = Math.floor(
+    luck([cell.i, cell.j, "initialValue"].toString()) * 10,
+  );
+  for (let serial = 0; serial < initialCoins; serial++) {
+    const coin: Coin = {
+      cell,
+      serial,
+      toString() {
+        return `${this.cell.i}:${this.cell.j}#${this.serial}`;
+      },
+    };
+    cache.addCoin(coin);
+  }
+  //add cache to map
+  const rect = leaflet.rectangle(bounds).addTo(map);
+  rect.bindPopup(() => createCachePopUps(cache));
 }
 
-//updating amount of coins in player inventory
+//reference cache saved in flyweight pattern and open popup
+function createCachePopUps(cache: Cache): HTMLDivElement {
+  const popUp = document.createElement("div");
+  popUp.innerHTML = `
+    <div>There is a cache here at "${cache.positionToString()}". It has <span id="value">${cache.coins.length}</span> coins.</div>
+    <button id="pickup">pick up</button>
+    <button id="drop">drop</button>`;
+
+  const pickupButton = popUp.querySelector<HTMLButtonElement>("#pickup")!;
+  const dropButton = popUp.querySelector<HTMLButtonElement>("#drop")!;
+  const valueSpan = popUp.querySelector<HTMLSpanElement>("#value")!;
+
+  dropButton.disabled = inv.length === 0;
+
+  pickupButton.addEventListener("click", () => {
+    if (cache.coins.length > 0) {
+      const coin = cache.coins.pop()!;
+      inv.push(coin);
+      updateStatus();
+      valueSpan.innerHTML = cache.coins.length.toString();
+      dropButton.disabled = inv.length === 0;
+    }
+  });
+
+  dropButton.addEventListener("click", () => {
+    if (inv.length > 0) {
+      const coin = inv.pop()!;
+      cache.addCoin(coin);
+      updateStatus();
+      valueSpan.innerHTML = cache.coins.length.toString();
+      dropButton.disabled = inv.length === 0;
+    }
+  });
+  return popUp;
+}
+
+//updating coins in player inventory on display
 function updateStatus() {
-  sPanel.innerHTML = `${invCount} coins currently held`;
+  sPanel.innerHTML = `${inv.length} coins currently held`;
+
+  const coinList = document.createElement("ul");
+  coinList.id = "coinList";
+
+  inv.forEach((coin) => {
+    const listItem = document.createElement("li");
+    listItem.textContent = `🪙${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
+    coinList.appendChild(listItem);
+  });
+  sPanel.appendChild(coinList);
 }
 
 //puts caches on map

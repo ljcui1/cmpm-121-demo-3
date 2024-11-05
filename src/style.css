@@ -55,6 +55,29 @@ h1 {
   height: 80vh;
 }
 
+#coinList {
+  list-style-type: none;
+  padding-left: 0;
+}
+
+#container {
+  display: flex;
+  justify-content: space-between;
+  height: 100vh;
+}
+
+#mapContainer {
+  flex: 1;
+  height: 100%;
+}
+
+#statusContainer {
+  width: 300px;
+  padding: 10px;
+  background-color: #f4f4f4;
+  overflow-y: auto;
+}
+
 button {
   border-radius: 8px;
   border: 1px solid transparent;
