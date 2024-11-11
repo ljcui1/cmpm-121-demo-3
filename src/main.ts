@@ -6,8 +6,7 @@ import "./style.css";
 
 import "./leafletWorkaround.ts";
 
-const cPanel: HTMLDivElement = document.createElement("div");
-cPanel.id = "controlPanel";
+const cPanel = document.querySelector<HTMLDivElement>("#controlPanel")!;
 const sPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
 sPanel.innerHTML = "No coins yet...";
 
@@ -22,7 +21,9 @@ const TILE_DEGREES = 1e-4;
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
 
-//flyweight pattern: reusing cell objects (i, j)
+let playerLoc = OAKES_CLASSROOM;
+
+//flyweight pattern to reuse cells
 const cellCache = new Map<string, Cell>();
 function getFlyWeightCell(i: number, j: number): Cell {
   const key = `${i},${j}`;
@@ -41,7 +42,7 @@ function latLngToCell(lat: number, lng: number): Cell {
 
 // Create the map (element with id "map" is defined in index.html)
 const map = leaflet.map(document.getElementById("map")!, {
-  center: OAKES_CLASSROOM,
+  center: playerLoc,
   zoom: GAMEPLAY_ZOOM_LEVEL,
   minZoom: GAMEPLAY_ZOOM_LEVEL,
   maxZoom: GAMEPLAY_ZOOM_LEVEL,
@@ -58,9 +59,25 @@ leaflet
   })
   .addTo(map);
 
-const playerMarker = leaflet.marker(OAKES_CLASSROOM);
+const playerMarker = leaflet.marker(playerLoc);
 playerMarker.bindTooltip("That is you.");
 playerMarker.addTo(map);
+
+//cache memento
+class CacheMemento {
+  private cState: Map<string, Coin[]> = new Map();
+
+  saveState(cache: Cache) {
+    this.cState.set(cache.positionToString(), [...cache.coins]);
+  }
+
+  restoreState(cache: Cache) {
+    const savedCoins = this.cState.get(cache.positionToString());
+    if (savedCoins) {
+      cache.coins = savedCoins;
+    }
+  }
+}
 
 //cache cell location
 interface Cell {
@@ -79,11 +96,13 @@ class Cache {
   coins: Coin[];
   position: Cell;
   bounds: leaflet.LatLngBounds;
+  memento: CacheMemento;
 
   constructor(position: Cell, bounds: leaflet.LatLngBounds) {
     this.coins = [];
     this.position = position;
     this.bounds = bounds;
+    this.memento = new CacheMemento();
   }
 
   positionToString(): string {
@@ -93,6 +112,14 @@ class Cache {
   addCoin(coin: Coin) {
     this.coins.push(coin);
   }
+
+  saveState() {
+    this.memento.saveState(this);
+  }
+
+  restoreState() {
+    this.memento.restoreState(this);
+  }
 }
 
 //coins in player inventory
@@ -100,21 +127,26 @@ const inv: Coin[] = [];
 
 //generates caches to be played on map
 function spawnCache(i: number, j: number) {
-  const origin = OAKES_CLASSROOM;
-  const bounds = leaflet.latLngBounds([
-    [origin.lat + i * TILE_DEGREES, origin.lng + j * TILE_DEGREES],
-    [origin.lat + (i + 1) * TILE_DEGREES, origin.lng + (j + 1) * TILE_DEGREES],
-  ]);
+  const latStart = playerLoc.lat + i * TILE_DEGREES;
+  const lngStart = playerLoc.lng + j * TILE_DEGREES;
+  const latEnd = latStart + TILE_DEGREES;
+  const lngEnd = lngStart + TILE_DEGREES;
+
+  const bounds = leaflet.latLngBounds(
+    [latStart, lngStart], // South-West corner
+    [latEnd, lngEnd], // North-East corner
+  );
 
   const cell = latLngToCell(
-    origin.lat + i * TILE_DEGREES,
-    origin.lng + j * TILE_DEGREES,
+    playerLoc.lat + i * TILE_DEGREES,
+    playerLoc.lng + j * TILE_DEGREES,
   );
   const cache = new Cache(cell, bounds);
 
   const initialCoins = Math.floor(
     luck([cell.i, cell.j, "initialValue"].toString()) * 10,
   );
+
   for (let serial = 0; serial < initialCoins; serial++) {
     const coin: Coin = {
       cell,
@@ -125,8 +157,15 @@ function spawnCache(i: number, j: number) {
     };
     cache.addCoin(coin);
   }
+
+  cache.saveState();
+
   //add cache to map
-  const rect = leaflet.rectangle(bounds).addTo(map);
+  const rect = leaflet.rectangle(bounds, {
+    color: "blue",
+    weight: 1,
+    fillOpacity: 0.2,
+  }).addTo(map);
   rect.bindPopup(() => createCachePopUps(cache));
 }
 
@@ -181,11 +220,52 @@ function updateStatus() {
   sPanel.appendChild(coinList);
 }
 
-//puts caches on map
-for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
-  for (let j = -NEIGHBORHOOD_SIZE; j < NEIGHBORHOOD_SIZE; j++) {
-    if (luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY) {
-      spawnCache(i, j);
+//player movement buttons
+const directions = [
+  { name: "⬆️", lat: TILE_DEGREES, lng: 0 },
+  { name: "⬇️", lat: -TILE_DEGREES, lng: 0 },
+  { name: "⬅️", lat: 0, lng: -TILE_DEGREES },
+  { name: "➡️", lat: 0, lng: TILE_DEGREES },
+];
+
+directions.forEach(({ name, lat, lng }) => {
+  const button = document.createElement("button");
+  button.textContent = name;
+  button.onclick = () => movePlayer(lat, lng);
+  cPanel.appendChild(button);
+});
+document.body.appendChild(cPanel);
+
+//move player and update the map view
+function movePlayer(latChange: number, lngChange: number) {
+  playerLoc = leaflet.latLng(
+    playerLoc.lat + latChange,
+    playerLoc.lng + lngChange,
+  );
+  playerMarker.setLatLng(playerLoc);
+
+  //recenter the map view on the player
+  map.setView(playerLoc);
+
+  //regenerate caches around player location
+  generateCaches();
+}
+
+//populate caches around new player location
+function generateCaches() {
+  for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
+    for (let j = -NEIGHBORHOOD_SIZE; j < NEIGHBORHOOD_SIZE; j++) {
+      const dist = Math.abs(i) + Math.abs(j);
+
+      if (
+        dist <= NEIGHBORHOOD_SIZE &&
+        luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY
+      ) {
+        spawnCache(i, j);
+      }
     }
   }
 }
+
+//populate caches around player
+generateCaches();
