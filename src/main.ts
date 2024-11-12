@@ -67,22 +67,6 @@ const playerMarker = leaflet.marker(playerLoc);
 playerMarker.bindTooltip("That is you.");
 playerMarker.addTo(map);
 
-//cache memento
-class CacheMemento {
-  private cState: Map<string, Coin[]> = new Map();
-
-  saveState(cache: Cache) {
-    this.cState.set(cache.positionToString(), [...cache.coins]);
-  }
-
-  restoreState(cache: Cache) {
-    const savedCoins = this.cState.get(cache.positionToString());
-    if (savedCoins) {
-      cache.coins = savedCoins;
-    }
-  }
-}
-
 //cache cell location
 interface Cell {
   i: number;
@@ -96,17 +80,21 @@ interface Coin {
 }
 
 //cache holds geocoins
-class Cache {
+interface Memento<T> {
+  toMemento(): T;
+  fromMemento(memento: T): void;
+}
+
+//cache memento
+class Cache implements Memento<string> {
   coins: Coin[];
   position: Cell;
   bounds: leaflet.LatLngBounds;
-  memento: CacheMemento;
 
   constructor(position: Cell, bounds: leaflet.LatLngBounds) {
     this.coins = [];
     this.position = position;
     this.bounds = bounds;
-    this.memento = new CacheMemento();
   }
 
   positionToString(): string {
@@ -115,58 +103,86 @@ class Cache {
 
   addCoin(coin: Coin) {
     this.coins.push(coin);
+    cMementos.set(this.positionToString(), this.toMemento());
   }
 
-  saveState() {
-    this.memento.saveState(this);
+  toMemento(): string {
+    const mementoInfo = {
+      coins: this.coins.map((coin) => ({
+        cell: { i: coin.cell.i, j: coin.cell.j },
+        serial: coin.serial,
+      })),
+      position: this.position,
+    };
+    return JSON.stringify(mementoInfo);
   }
 
-  restoreState() {
-    this.memento.restoreState(this);
+  fromMemento(memento: string): void {
+    const mementoInfo = JSON.parse(memento);
+    this.position = mementoInfo.position;
+    this.coins = mementoInfo.coins.map((coinInfo: Coin) => ({
+      cell: coinInfo.cell,
+      serial: coinInfo.serial,
+      toString() {
+        return `${this.cell.i}:${this.cell.j}#${this.serial}`;
+      },
+    }));
   }
 }
+const cMementos: Map<string, string> = new Map();
 
 //coins in player inventory
 const inv: Coin[] = [];
 
-// Type guard to check if a layer is a Rectangle with a cache property
-function isCacheRect(
-  layer: Layer,
-): layer is leaflet.Rectangle & { cache: Cache } {
-  return layer instanceof leaflet.Rectangle && "cache" in layer;
-}
-
 //generates caches to be played on map
 function spawnCache(i: number, j: number) {
-  const latStart = playerLoc.lat + i * TILE_DEGREES;
-  const lngStart = playerLoc.lng + j * TILE_DEGREES;
-  const latEnd = latStart + TILE_DEGREES;
-  const lngEnd = lngStart + TILE_DEGREES;
+  const latStart = i * TILE_DEGREES;
+  const lngStart = j * TILE_DEGREES;
+  const positionKey = `${i},${j}`;
+
+  console.log(
+    `Spawning cache at latitude: ${latStart}, longitude: ${lngStart}`,
+  );
+  console.log(`position ${positionKey}`);
 
   const bounds = leaflet.latLngBounds(
     [latStart, lngStart], // South-West corner
-    [latEnd, lngEnd], // North-East corner
+    [latStart + TILE_DEGREES, lngStart + TILE_DEGREES], // North-East corner
   );
 
   const cell = CellFlyWeight.getFlyWeightCell(i, j);
   const cache = new Cache(cell, bounds);
 
-  const initialCoins = Math.floor(
-    luck([cell.i, cell.j, "initialValue"].toString()) * 10,
-  );
+  const memento = cMementos.get(positionKey);
+  if (memento) {
+    //restore the cache state from the memento
+    cache.fromMemento(memento);
+    console.log(`Restoring cache from memento for position ${positionKey}`);
+    console.log("After memento restore", cache.coins);
+  } else {
+    console.log(`No memento found for position ${positionKey}`);
+    const initialCoins = Math.floor(
+      luck([cell.i, cell.j, "initialValue"].toString()) * 10,
+    );
 
-  for (let serial = 0; serial < initialCoins; serial++) {
-    const coin: Coin = {
-      cell,
-      serial,
-      toString() {
-        return `${this.cell.i}:${this.cell.j}#${this.serial}`;
-      },
-    };
-    cache.addCoin(coin);
+    for (let serial = 0; serial < initialCoins; serial++) {
+      const coin: Coin = {
+        cell,
+        serial,
+        toString() {
+          return `${this.cell.i}:${this.cell.j}#${this.serial}`;
+        },
+      };
+      cache.addCoin(coin);
+    }
+
+    cMementos.set(positionKey, cache.toMemento());
+    console.log(
+      "Saved memento for cache at position:",
+      positionKey,
+      cMementos.get(positionKey),
+    );
   }
-
-  cache.saveState();
 
   //add cache to map
   const rect = leaflet.rectangle(bounds, {
@@ -176,7 +192,6 @@ function spawnCache(i: number, j: number) {
   }).addTo(map);
   rect.cache = cache;
   rect.bindPopup(() => createCachePopUps(cache));
-  rect.addTo(map);
 }
 
 //reference cache saved in flyweight pattern and open popup
@@ -192,21 +207,27 @@ function createCachePopUps(cache: Cache): HTMLDivElement {
   const valueSpan = popUp.querySelector<HTMLSpanElement>("#value")!;
 
   dropButton.disabled = inv.length === 0;
+  pickupButton.disabled = cache.coins.length === 0;
 
   pickupButton.addEventListener("click", () => {
-    if (cache.coins.length > 0) {
+    console.log("Before pickup", cache.coins);
+    if (cache.coins.length >= 0) {
       const coin = cache.coins.pop()!;
       inv.push(coin);
+      console.log("Before memento save", cache.toMemento());
+      cMementos.set(cache.positionToString(), cache.toMemento());
       updateStatus();
       valueSpan.innerHTML = cache.coins.length.toString();
       dropButton.disabled = inv.length === 0;
+      pickupButton.disabled = cache.coins.length === 0;
     }
   });
 
   dropButton.addEventListener("click", () => {
-    if (inv.length > 0) {
+    if (inv.length >= 0) {
       const coin = inv.pop()!;
       cache.addCoin(coin);
+      cMementos.set(cache.positionToString(), cache.toMemento());
       updateStatus();
       valueSpan.innerHTML = cache.coins.length.toString();
       dropButton.disabled = inv.length === 0;
@@ -265,15 +286,15 @@ function movePlayer(latChange: number, lngChange: number) {
 
 //populate caches around new player location
 function generateCaches() {
+  const playerCell = CellFlyWeight.getLatLngCell(playerLoc.lat, playerLoc.lng);
   for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
     for (let j = -NEIGHBORHOOD_SIZE; j < NEIGHBORHOOD_SIZE; j++) {
       const dist = Math.abs(i) + Math.abs(j);
-
+      const cellKey = [playerCell.i + i, playerCell.j + j].toString();
       if (
-        dist <= NEIGHBORHOOD_SIZE &&
-        luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY
+        dist <= NEIGHBORHOOD_SIZE && luck(cellKey) < CACHE_SPAWN_PROBABILITY
       ) {
-        spawnCache(i, j);
+        spawnCache(playerCell.i + i, playerCell.j + j);
       }
     }
   }
@@ -281,8 +302,9 @@ function generateCaches() {
 
 function clearCaches() {
   map.eachLayer((layer: Layer) => {
-    if (isCacheRect(layer)) {
-      layer.cache.saveState(); // Save the cache state to mementos
+    if (layer instanceof leaflet.Rectangle && layer.cache) {
+      const cache = layer.cache as Cache;
+      cMementos.set(cache.positionToString(), cache.toMemento());
       map.removeLayer(layer);
     }
   });
