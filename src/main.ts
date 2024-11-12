@@ -6,6 +6,8 @@ import "./style.css";
 
 import "./leafletWorkaround.ts";
 
+import { Layer } from "leaflet";
+
 const cPanel = document.querySelector<HTMLDivElement>("#controlPanel")!;
 const sPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
 sPanel.innerHTML = "No coins yet...";
@@ -24,20 +26,22 @@ const CACHE_SPAWN_PROBABILITY = 0.1;
 let playerLoc = OAKES_CLASSROOM;
 
 //flyweight pattern to reuse cells
-const cellCache = new Map<string, Cell>();
-function getFlyWeightCell(i: number, j: number): Cell {
-  const key = `${i},${j}`;
-  if (!cellCache.has(key)) {
-    cellCache.set(key, { i, j });
-  }
-  return cellCache.get(key)!;
-}
+class CellFlyWeight {
+  private static cellCache: Map<string, Cell> = new Map();
 
-//convert lat/long to global coords anchored at Null Island
-function latLngToCell(lat: number, lng: number): Cell {
-  const i = Math.round(lat * 1e4);
-  const j = Math.round(lng * 1e4);
-  return getFlyWeightCell(i, j);
+  //convert lat and long
+  static getLatLngCell(lat: number, lng: number): Cell {
+    const i = Math.floor((lat - 0) / TILE_DEGREES);
+    const j = Math.floor((lng - 0) / TILE_DEGREES);
+    return this.getFlyWeightCell(i, j);
+  }
+  static getFlyWeightCell(i: number, j: number): Cell {
+    const key = `${i},${j}`;
+    if (!this.cellCache.has(key)) {
+      this.cellCache.set(key, { i, j });
+    }
+    return this.cellCache.get(key)!;
+  }
 }
 
 // Create the map (element with id "map" is defined in index.html)
@@ -125,6 +129,13 @@ class Cache {
 //coins in player inventory
 const inv: Coin[] = [];
 
+// Type guard to check if a layer is a Rectangle with a cache property
+function isCacheRect(
+  layer: Layer,
+): layer is leaflet.Rectangle & { cache: Cache } {
+  return layer instanceof leaflet.Rectangle && "cache" in layer;
+}
+
 //generates caches to be played on map
 function spawnCache(i: number, j: number) {
   const latStart = playerLoc.lat + i * TILE_DEGREES;
@@ -137,10 +148,7 @@ function spawnCache(i: number, j: number) {
     [latEnd, lngEnd], // North-East corner
   );
 
-  const cell = latLngToCell(
-    playerLoc.lat + i * TILE_DEGREES,
-    playerLoc.lng + j * TILE_DEGREES,
-  );
+  const cell = CellFlyWeight.getFlyWeightCell(i, j);
   const cache = new Cache(cell, bounds);
 
   const initialCoins = Math.floor(
@@ -166,7 +174,9 @@ function spawnCache(i: number, j: number) {
     weight: 1,
     fillOpacity: 0.2,
   }).addTo(map);
+  rect.cache = cache;
   rect.bindPopup(() => createCachePopUps(cache));
+  rect.addTo(map);
 }
 
 //reference cache saved in flyweight pattern and open popup
@@ -247,6 +257,8 @@ function movePlayer(latChange: number, lngChange: number) {
   //recenter the map view on the player
   map.setView(playerLoc);
 
+  //clear cache
+  clearCaches();
   //regenerate caches around player location
   generateCaches();
 }
@@ -265,6 +277,15 @@ function generateCaches() {
       }
     }
   }
+}
+
+function clearCaches() {
+  map.eachLayer((layer: Layer) => {
+    if (isCacheRect(layer)) {
+      layer.cache.saveState(); // Save the cache state to mementos
+      map.removeLayer(layer);
+    }
+  });
 }
 
 //populate caches around player
