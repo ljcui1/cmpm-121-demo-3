@@ -121,7 +121,7 @@ class Cache implements Memento<string> {
     const mementoInfo = JSON.parse(memento);
     this.position = mementoInfo.position;
     this.coins = mementoInfo.coins.map((coinInfo: Coin) => ({
-      cell: coinInfo.cell,
+      cell: { i: coinInfo.cell.i, j: coinInfo.cell.j },
       serial: coinInfo.serial,
       toString() {
         return `${this.cell.i}:${this.cell.j}#${this.serial}`;
@@ -153,7 +153,7 @@ function spawnCache(i: number, j: number) {
   const cell = CellFlyWeight.getFlyWeightCell(i, j);
   const cache = new Cache(cell, bounds);
 
-  const memento = cMementos.get(positionKey);
+  const memento = cMementos.get(cache.positionToString());
   if (memento) {
     //restore the cache state from the memento
     cache.fromMemento(memento);
@@ -176,7 +176,7 @@ function spawnCache(i: number, j: number) {
       cache.addCoin(coin);
     }
 
-    cMementos.set(positionKey, cache.toMemento());
+    cMementos.set(cache.positionToString(), cache.toMemento());
     console.log(
       "Saved memento for cache at position:",
       positionKey,
@@ -231,6 +231,7 @@ function createCachePopUps(cache: Cache): HTMLDivElement {
       updateStatus();
       valueSpan.innerHTML = cache.coins.length.toString();
       dropButton.disabled = inv.length === 0;
+      pickupButton.disabled = cache.coins.length === 0;
     }
   });
   return popUp;
