@@ -23,7 +23,12 @@ const TILE_DEGREES = 1e-4;
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
 
-let playerLoc = OAKES_CLASSROOM;
+let playerLoc = loadPlayerLoc() || OAKES_CLASSROOM;
+let geoLocationWatchId: number | null = null;
+//movement history
+let moveHist: leaflet.LatLng[] = [];
+//polyline for movement
+let pLine: leaflet.polyline | null = null;
 
 //flyweight pattern to reuse cells
 class CellFlyWeight {
@@ -104,6 +109,7 @@ class Cache implements Memento<string> {
   addCoin(coin: Coin) {
     this.coins.push(coin);
     cMementos.set(this.positionToString(), this.toMemento());
+    saveGameState();
   }
 
   toMemento(): string {
@@ -129,22 +135,16 @@ class Cache implements Memento<string> {
     }));
   }
 }
-const cMementos: Map<string, string> = new Map();
+const cMementos: Map<string, string> = new Map(loadCaches());
 
 //coins in player inventory
-const inv: Coin[] = [];
+const inv: Coin[] = loadInv();
+updateStatus();
 
 //generates caches to be played on map
 function spawnCache(i: number, j: number) {
   const latStart = i * TILE_DEGREES;
   const lngStart = j * TILE_DEGREES;
-  const positionKey = `${i},${j}`;
-
-  console.log(
-    `Spawning cache at latitude: ${latStart}, longitude: ${lngStart}`,
-  );
-  console.log(`position ${positionKey}`);
-
   const bounds = leaflet.latLngBounds(
     [latStart, lngStart], // South-West corner
     [latStart + TILE_DEGREES, lngStart + TILE_DEGREES], // North-East corner
@@ -157,10 +157,7 @@ function spawnCache(i: number, j: number) {
   if (memento) {
     //restore the cache state from the memento
     cache.fromMemento(memento);
-    console.log(`Restoring cache from memento for position ${positionKey}`);
-    console.log("After memento restore", cache.coins);
   } else {
-    console.log(`No memento found for position ${positionKey}`);
     const initialCoins = Math.floor(
       luck([cell.i, cell.j, "initialValue"].toString()) * 10,
     );
@@ -177,11 +174,6 @@ function spawnCache(i: number, j: number) {
     }
 
     cMementos.set(cache.positionToString(), cache.toMemento());
-    console.log(
-      "Saved memento for cache at position:",
-      positionKey,
-      cMementos.get(positionKey),
-    );
   }
 
   //add cache to map
@@ -214,10 +206,10 @@ function createCachePopUps(cache: Cache): HTMLDivElement {
     if (cache.coins.length >= 0) {
       const coin = cache.coins.pop()!;
       inv.push(coin);
-      console.log("Before memento save", cache.toMemento());
       cMementos.set(cache.positionToString(), cache.toMemento());
       updateStatus();
       valueSpan.innerHTML = cache.coins.length.toString();
+      saveGameState();
       dropButton.disabled = inv.length === 0;
       pickupButton.disabled = cache.coins.length === 0;
     }
@@ -230,6 +222,7 @@ function createCachePopUps(cache: Cache): HTMLDivElement {
       cMementos.set(cache.positionToString(), cache.toMemento());
       updateStatus();
       valueSpan.innerHTML = cache.coins.length.toString();
+      saveGameState();
       dropButton.disabled = inv.length === 0;
       pickupButton.disabled = cache.coins.length === 0;
     }
@@ -247,9 +240,62 @@ function updateStatus() {
   inv.forEach((coin) => {
     const listItem = document.createElement("li");
     listItem.textContent = `🪙${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
+    listItem.style.cursor = "pointer";
+
+    //click event to center map on the coin's home cache
+    listItem.onclick = () => centerMapOnCoin(coin);
     coinList.appendChild(listItem);
   });
   sPanel.appendChild(coinList);
+}
+
+function centerMapOnCoin(coin: Coin) {
+  const coinLat = coin.cell.i * TILE_DEGREES;
+  const coinLng = coin.cell.j * TILE_DEGREES;
+  const coinLoc = leaflet.latLng(coinLat, coinLng);
+
+  map.setView(coinLoc, GAMEPLAY_ZOOM_LEVEL);
+
+  //temporary marker at the cache location
+  const tempMarker = leaflet.marker(coinLoc, {
+    icon: leaflet.divIcon({
+      className: "temp-marker",
+      html: "📍",
+      iconSize: [60, 60],
+      iconAnchor: [12, 36],
+    }),
+  }).addTo(map);
+
+  //remove the temporary marker after 3 seconds
+  setTimeout(() => map.removeLayer(tempMarker), 3000);
+}
+
+//save gamestate to localstorage
+function saveGameState() {
+  localStorage.setItem("playerLocation", JSON.stringify(playerLoc));
+  localStorage.setItem("inventory", JSON.stringify(inv));
+  localStorage.setItem(
+    "cMementos",
+    JSON.stringify(Array.from(cMementos.entries())),
+  );
+}
+
+//load caches from localstorage
+function loadCaches(): Map<string, string> {
+  const savedCaches = localStorage.getItem("cMementos");
+  return savedCaches ? new Map(JSON.parse(savedCaches)) : new Map();
+}
+
+//load inv from localstorage
+function loadInv(): Coin[] {
+  const savedInv = localStorage.getItem("inventory");
+  return savedInv ? JSON.parse(savedInv) : [];
+}
+
+//load player location from localstorage
+function loadPlayerLoc(): leaflet.LatLng | null {
+  const savedLoc = localStorage.getItem("playerLocation");
+  return savedLoc ? leaflet.latLng(JSON.parse(savedLoc)) : null;
 }
 
 //player movement buttons
@@ -262,10 +308,20 @@ const directions = [
 
 directions.forEach(({ name, lat, lng }) => {
   const button = document.createElement("button");
-  button.textContent = name;
+  button.innerHTML = name;
   button.onclick = () => movePlayer(lat, lng);
   cPanel.appendChild(button);
 });
+
+const geoLocateButton = document.createElement("button");
+geoLocateButton.innerHTML = "🌐";
+geoLocateButton.onclick = toggleGeoLocation;
+cPanel.appendChild(geoLocateButton);
+
+const resetButton = document.createElement("button");
+resetButton.innerHTML = "🚮";
+resetButton.onclick = resetGameState;
+cPanel.appendChild(resetButton);
 document.body.appendChild(cPanel);
 
 //move player and update the map view
@@ -279,10 +335,79 @@ function movePlayer(latChange: number, lngChange: number) {
   //recenter the map view on the player
   map.setView(playerLoc);
 
+  moveHist.push(playerLoc);
+  if (pLine) {
+    map.removeLayer(pLine);
+  }
+  pLine = leaflet.polyline(moveHist, {
+    color: "red", // Color of the polyline
+    weight: 3, // Width of the polyline
+    opacity: 0.7, // Opacity of the polyline
+  }).addTo(map);
+
   //clear cache
   clearCaches();
   //regenerate caches around player location
   generateCaches();
+}
+
+function toggleGeoLocation() {
+  if (geoLocationWatchId === null) {
+    geoLocationWatchId = navigator.geolocation.watchPosition(
+      (position) => {
+        playerLoc = leaflet.latLng(
+          position.coords.latitude,
+          position.coords.longitude,
+        );
+        playerMarker.setLatLng(playerLoc);
+        saveGameState();
+        map.setView(playerLoc);
+        clearCaches();
+        generateCaches();
+      },
+      (error) => console.error("Geolocation error:", error),
+      { enableHighAccuracy: true },
+    );
+    geoLocateButton.innerHTML = "🌐 (On)";
+  } else {
+    navigator.geolocation.clearWatch(geoLocationWatchId);
+    geoLocationWatchId = null;
+    geoLocateButton.innerHTML = "🌐 (Off)";
+  }
+}
+
+function resetGameState() {
+  const confirmation = prompt(
+    "Are you sure you want to reset the game? Type 'yes' to confirm.",
+  );
+  if (confirmation && confirmation.toLowerCase() === "yes") {
+    //clear location and inventory history
+    localStorage.removeItem("playerLocation");
+    localStorage.removeItem("inventory");
+    localStorage.removeItem("cMementos");
+
+    //reset player location to initial value
+    playerLoc = OAKES_CLASSROOM;
+    playerMarker.setLatLng(playerLoc);
+    map.setView(playerLoc);
+
+    //clear caches from the map
+    clearCaches();
+
+    //reset inventory and mementos
+    inv.length = 0;
+    cMementos.clear();
+    updateStatus();
+
+    // Clear movement history and polyline
+    moveHist = [];
+    if (pLine) {
+      map.removeLayer(pLine);
+      pLine = null;
+    }
+
+    console.log("Game has been reset.");
+  }
 }
 
 //populate caches around new player location
