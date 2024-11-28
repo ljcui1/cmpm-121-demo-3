@@ -65,31 +65,15 @@ class UIManager {
     dropButton.disabled = inv.length === 0;
     pickupButton.disabled = cache.coins.length === 0;
 
+    // Event Delegation (emit events for game logic to handle)
     pickupButton.addEventListener("click", () => {
-      console.log("Before pickup", cache.coins);
-      if (cache.coins.length >= 0) {
-        const coin = cache.coins.pop()!;
-        inv.push(coin);
-        cMementos.set(cache.positionToString(), cache.toMemento());
-        updateStatus();
-        valueSpan.innerHTML = cache.coins.length.toString();
-        saveGameState();
-        dropButton.disabled = inv.length === 0;
-        pickupButton.disabled = cache.coins.length === 0;
-      }
+      document.dispatchEvent(new CustomEvent("pickupCoin", { detail: cache }));
+      valueSpan.innerHTML = cache.coins.length.toString();
     });
 
     dropButton.addEventListener("click", () => {
-      if (inv.length >= 0) {
-        const coin = inv.pop()!;
-        cache.addCoin(coin);
-        cMementos.set(cache.positionToString(), cache.toMemento());
-        updateStatus();
-        valueSpan.innerHTML = cache.coins.length.toString();
-        saveGameState();
-        dropButton.disabled = inv.length === 0;
-        pickupButton.disabled = cache.coins.length === 0;
-      }
+      document.dispatchEvent(new CustomEvent("dropCoin", { detail: cache }));
+      valueSpan.innerHTML = cache.coins.length.toString();
     });
 
     return popUp;
@@ -201,7 +185,7 @@ class Cache implements Memento<string> {
   addCoin(coin: Coin) {
     this.coins.push(coin);
     cMementos.set(this.positionToString(), this.toMemento());
-    saveGameState();
+    gameState.saveGameState();
   }
 
   toMemento(): string {
@@ -228,6 +212,108 @@ class Cache implements Memento<string> {
   }
 }
 const cMementos: Map<string, string> = new Map(loadCaches());
+
+class GameState {
+  private playerLocation: leaflet.LatLng;
+  private movementHistory: leaflet.LatLng[];
+  private inventory: Coin[];
+  private cacheStates: Map<string, string>;
+
+  constructor(initialLocation: leaflet.LatLng) {
+    this.playerLocation = this.loadPlayerLocation() || initialLocation;
+    this.movementHistory = [];
+    this.inventory = this.loadInventory();
+    this.cacheStates = new Map(this.loadCacheStates());
+  }
+
+  // --- Player Location ---
+  getPlayerLocation(): leaflet.LatLng {
+    return this.playerLocation;
+  }
+
+  setPlayerLocation(newLocation: leaflet.LatLng): void {
+    this.playerLocation = newLocation;
+    this.movementHistory.push(newLocation);
+    this.saveGameState();
+  }
+
+  getMovementHistory(): leaflet.LatLng[] {
+    return this.movementHistory;
+  }
+
+  // --- Inventory ---
+  addToInventory(coin: Coin): void {
+    this.inventory.push(coin);
+    this.saveGameState();
+  }
+
+  removeFromInventory(): Coin | null {
+    const coin = this.inventory.pop() || null;
+    this.saveGameState();
+    return coin;
+  }
+
+  getInventory(): Coin[] {
+    return this.inventory;
+  }
+
+  // --- Cache States ---
+  getCacheState(key: string): string | undefined {
+    return this.cacheStates.get(key);
+  }
+
+  setCacheState(key: string, state: string): void {
+    this.cacheStates.set(key, state);
+    this.saveGameState();
+  }
+
+  // --- Save and Load Functions ---
+  public saveGameState(): void {
+    localStorage.setItem("playerLocation", JSON.stringify(this.playerLocation));
+    localStorage.setItem("inventory", JSON.stringify(this.inventory));
+    localStorage.setItem(
+      "cacheStates",
+      JSON.stringify(Array.from(this.cacheStates.entries())),
+    );
+  }
+
+  private loadPlayerLocation(): leaflet.LatLng | null {
+    const savedLocation = localStorage.getItem("playerLocation");
+    return savedLocation ? leaflet.latLng(JSON.parse(savedLocation)) : null;
+  }
+
+  private loadInventory(): Coin[] {
+    const savedInventory = localStorage.getItem("inventory");
+    return savedInventory ? JSON.parse(savedInventory) : [];
+  }
+
+  private loadCacheStates(): Iterable<[string, string]> {
+    const savedStates = localStorage.getItem("cacheStates");
+    return savedStates ? JSON.parse(savedStates) : [];
+  }
+}
+
+const gameState = new GameState(OAKES_CLASSROOM);
+
+document.addEventListener("pickupCoin", (event: Event) => {
+  const cache = (event as CustomEvent).detail;
+  const coin = cache.coins.pop(); // Remove coin from cache
+  if (coin) {
+    gameState.addToInventory(coin); // Add coin to inventory via GameState
+    gameState.setCacheState(cache.positionToString(), cache.toMemento()); // Save new cache state
+    uiManager.updateStatusPanel(gameState.getInventory()); // Refresh UI
+  }
+});
+
+document.addEventListener("dropCoin", (event: Event) => {
+  const cache = (event as CustomEvent).detail;
+  const coin = gameState.removeFromInventory(); // Remove coin from inventory via GameState
+  if (coin) {
+    cache.addCoin(coin); // Add coin back to the cache
+    gameState.setCacheState(cache.positionToString(), cache.toMemento()); // Save new cache state
+    uiManager.updateStatusPanel(gameState.getInventory()); // Refresh UI
+  }
+});
 
 //coins in player inventory
 const inv: Coin[] = loadInv();
@@ -314,16 +400,6 @@ function centerMapOnCoin(coin: Coin) {
   setTimeout(() => map.removeLayer(tempMarker), 3000);
 }
 
-//save gamestate to localstorage
-function saveGameState() {
-  localStorage.setItem("playerLocation", JSON.stringify(playerLoc));
-  localStorage.setItem("inventory", JSON.stringify(inv));
-  localStorage.setItem(
-    "cMementos",
-    JSON.stringify(Array.from(cMementos.entries())),
-  );
-}
-
 //load caches from localstorage
 function loadCaches(): Map<string, string> {
   const savedCaches = localStorage.getItem("cMementos");
@@ -375,9 +451,9 @@ function movePlayer(latChange: number, lngChange: number) {
     playerLoc.lng + lngChange,
   );
   playerMarker.setLatLng(playerLoc);
-
-  //recenter the map view on the player
-  map.setView(playerLoc);
+  gameState.setPlayerLocation(playerLoc); // Use GameState's method to update location
+  playerMarker.setLatLng(playerLoc); // Update marker location
+  map.setView(playerLoc); // Recenter map
 
   moveHist.push(playerLoc);
   if (pLine) {
@@ -388,6 +464,7 @@ function movePlayer(latChange: number, lngChange: number) {
     weight: 3, // Width of the polyline
     opacity: 0.7, // Opacity of the polyline
   }).addTo(map);
+  gameState.saveGameState();
 
   //clear cache
   clearCaches();
@@ -404,7 +481,7 @@ function toggleGeoLocation() {
           position.coords.longitude,
         );
         playerMarker.setLatLng(playerLoc);
-        saveGameState();
+        gameState.saveGameState();
         map.setView(playerLoc);
         clearCaches();
         generateCaches();
