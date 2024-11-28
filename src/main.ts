@@ -8,9 +8,101 @@ import "./leafletWorkaround.ts";
 
 import { Layer } from "leaflet";
 
-const cPanel = document.querySelector<HTMLDivElement>("#controlPanel")!;
-const sPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
-sPanel.innerHTML = "No coins yet...";
+class UIManager {
+  private controlPanel: HTMLDivElement;
+  private statusPanel: HTMLDivElement;
+
+  constructor() {
+    this.controlPanel = document.querySelector<HTMLDivElement>(
+      "#controlPanel",
+    )!;
+    this.statusPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
+    this.statusPanel.innerHTML = "No coins yet...";
+  }
+
+  // Public getter for controlPanel
+  public getControlPanel(): HTMLDivElement {
+    return this.controlPanel;
+  }
+
+  // Method to append buttons to the control panel
+  addControlPanelButton(button: HTMLButtonElement): void {
+    this.controlPanel.appendChild(button);
+  }
+
+  // Handle status panel updates (e.g., inventory count)
+  updateStatusPanel(inventory: Coin[]): void {
+    this.statusPanel.innerHTML = `${inventory.length} coins currently held`;
+
+    const coinList = document.createElement("ul");
+    coinList.id = "coinList";
+
+    inventory.forEach((coin) => {
+      const listItem = document.createElement("li");
+      listItem.textContent = `🪙${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
+      listItem.style.cursor = "pointer";
+
+      // Emit a custom event for any click on a coin in the list
+      listItem.onclick = () => uiManager.emit("centerOnCoin", coin);
+      coinList.appendChild(listItem);
+    });
+
+    this.statusPanel.appendChild(coinList);
+  }
+
+  // Create popup UI for caches and wire events for buttons
+  createCachePopUpUI(cache: Cache): HTMLDivElement {
+    const popUp = document.createElement("div");
+    popUp.innerHTML = `
+          <div>There is a cache here at "${cache.positionToString()}". It has <span id="value">${cache.coins.length}</span> coins.</div>
+          <button id="pickup">pick up</button>
+          <button id="drop">drop</button>`;
+
+    const pickupButton = popUp.querySelector<HTMLButtonElement>("#pickup")!;
+    const dropButton = popUp.querySelector<HTMLButtonElement>("#drop")!;
+    const valueSpan = popUp.querySelector<HTMLSpanElement>("#value")!;
+
+    dropButton.disabled = inv.length === 0;
+    pickupButton.disabled = cache.coins.length === 0;
+
+    pickupButton.addEventListener("click", () => {
+      console.log("Before pickup", cache.coins);
+      if (cache.coins.length >= 0) {
+        const coin = cache.coins.pop()!;
+        inv.push(coin);
+        cMementos.set(cache.positionToString(), cache.toMemento());
+        updateStatus();
+        valueSpan.innerHTML = cache.coins.length.toString();
+        saveGameState();
+        dropButton.disabled = inv.length === 0;
+        pickupButton.disabled = cache.coins.length === 0;
+      }
+    });
+
+    dropButton.addEventListener("click", () => {
+      if (inv.length >= 0) {
+        const coin = inv.pop()!;
+        cache.addCoin(coin);
+        cMementos.set(cache.positionToString(), cache.toMemento());
+        updateStatus();
+        valueSpan.innerHTML = cache.coins.length.toString();
+        saveGameState();
+        dropButton.disabled = inv.length === 0;
+        pickupButton.disabled = cache.coins.length === 0;
+      }
+    });
+
+    return popUp;
+  }
+
+  // Emit events for listeners that will be handled by the game logic
+  private emit<T>(eventName: string, ...args: T[]): void {
+    const event = new CustomEvent(eventName, { detail: args });
+    document.dispatchEvent(event);
+  }
+}
+
+const uiManager = new UIManager();
 
 document.title = "Geocoin Carrier";
 
@@ -188,66 +280,18 @@ function spawnCache(i: number, j: number) {
 
 //reference cache saved in flyweight pattern and open popup
 function createCachePopUps(cache: Cache): HTMLDivElement {
-  const popUp = document.createElement("div");
-  popUp.innerHTML = `
-    <div>There is a cache here at "${cache.positionToString()}". It has <span id="value">${cache.coins.length}</span> coins.</div>
-    <button id="pickup">pick up</button>
-    <button id="drop">drop</button>`;
-
-  const pickupButton = popUp.querySelector<HTMLButtonElement>("#pickup")!;
-  const dropButton = popUp.querySelector<HTMLButtonElement>("#drop")!;
-  const valueSpan = popUp.querySelector<HTMLSpanElement>("#value")!;
-
-  dropButton.disabled = inv.length === 0;
-  pickupButton.disabled = cache.coins.length === 0;
-
-  pickupButton.addEventListener("click", () => {
-    console.log("Before pickup", cache.coins);
-    if (cache.coins.length >= 0) {
-      const coin = cache.coins.pop()!;
-      inv.push(coin);
-      cMementos.set(cache.positionToString(), cache.toMemento());
-      updateStatus();
-      valueSpan.innerHTML = cache.coins.length.toString();
-      saveGameState();
-      dropButton.disabled = inv.length === 0;
-      pickupButton.disabled = cache.coins.length === 0;
-    }
-  });
-
-  dropButton.addEventListener("click", () => {
-    if (inv.length >= 0) {
-      const coin = inv.pop()!;
-      cache.addCoin(coin);
-      cMementos.set(cache.positionToString(), cache.toMemento());
-      updateStatus();
-      valueSpan.innerHTML = cache.coins.length.toString();
-      saveGameState();
-      dropButton.disabled = inv.length === 0;
-      pickupButton.disabled = cache.coins.length === 0;
-    }
-  });
-  return popUp;
+  return uiManager.createCachePopUpUI(cache);
 }
 
 //updating coins in player inventory on display
 function updateStatus() {
-  sPanel.innerHTML = `${inv.length} coins currently held`;
-
-  const coinList = document.createElement("ul");
-  coinList.id = "coinList";
-
-  inv.forEach((coin) => {
-    const listItem = document.createElement("li");
-    listItem.textContent = `🪙${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
-    listItem.style.cursor = "pointer";
-
-    //click event to center map on the coin's home cache
-    listItem.onclick = () => centerMapOnCoin(coin);
-    coinList.appendChild(listItem);
-  });
-  sPanel.appendChild(coinList);
+  uiManager.updateStatusPanel(inv);
 }
+
+document.addEventListener("centerOnCoin", (event: Event) => {
+  const coin = (event as CustomEvent).detail[0];
+  centerMapOnCoin(coin);
+});
 
 function centerMapOnCoin(coin: Coin) {
   const coinLat = coin.cell.i * TILE_DEGREES;
@@ -310,19 +354,19 @@ directions.forEach(({ name, lat, lng }) => {
   const button = document.createElement("button");
   button.innerHTML = name;
   button.onclick = () => movePlayer(lat, lng);
-  cPanel.appendChild(button);
+  uiManager.addControlPanelButton(button);
 });
 
 const geoLocateButton = document.createElement("button");
 geoLocateButton.innerHTML = "🌐";
 geoLocateButton.onclick = toggleGeoLocation;
-cPanel.appendChild(geoLocateButton);
+uiManager.addControlPanelButton(geoLocateButton);
 
 const resetButton = document.createElement("button");
 resetButton.innerHTML = "🚮";
 resetButton.onclick = resetGameState;
-cPanel.appendChild(resetButton);
-document.body.appendChild(cPanel);
+uiManager.addControlPanelButton(resetButton);
+document.body.appendChild(uiManager.getControlPanel());
 
 //move player and update the map view
 function movePlayer(latChange: number, lngChange: number) {
