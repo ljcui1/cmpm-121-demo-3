@@ -62,7 +62,7 @@ class UIManager {
     const dropButton = popUp.querySelector<HTMLButtonElement>("#drop")!;
     const valueSpan = popUp.querySelector<HTMLSpanElement>("#value")!;
 
-    dropButton.disabled = inv.length === 0;
+    dropButton.disabled = gameState.getInventory().length === 0;
     pickupButton.disabled = cache.coins.length === 0;
 
     // Event Delegation (emit events for game logic to handle)
@@ -202,8 +202,10 @@ class Cache implements Memento<string> {
   fromMemento(memento: string): void {
     const mementoInfo = JSON.parse(memento);
     this.position = mementoInfo.position;
-    this.coins = mementoInfo.coins.map((coinInfo: Coin) => ({
-      cell: { i: coinInfo.cell.i, j: coinInfo.cell.j },
+    this.coins = mementoInfo.coins.map((
+      coinInfo: { cell: Cell; serial: number },
+    ) => ({
+      cell: coinInfo.cell,
       serial: coinInfo.serial,
       toString() {
         return `${this.cell.i}:${this.cell.j}#${this.serial}`;
